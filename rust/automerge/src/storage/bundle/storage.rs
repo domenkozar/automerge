@@ -142,9 +142,11 @@ fn extract_id_ctr_values(
 }
 
 fn decode_delta_int(bytes: &[u8]) -> Result<Vec<i64>, ParseError> {
-    hexane::DeltaDecoder::<Option<i64>>::new(bytes)
-        .map(|item| item.ok_or(ParseError::InverseDecode))
-        .collect()
+    // Streaming decoders assume already validated columns. Bundle bytes are
+    // untrusted here, so use the fallible loader to check encoding and delta
+    // arithmetic before iterating. Counter columns must not contain nulls.
+    let column = hexane::DeltaColumn::<i64>::load(bytes)?;
+    Ok(column.iter().collect())
 }
 
 impl<'a> BundleStorage<'a, Unverified> {
@@ -330,5 +332,42 @@ impl BundleStorage<'_, Verified> {
 
     pub(crate) fn deps(&self) -> &[ChangeHash] {
         &self.deps
+    }
+}
+
+#[cfg(test)]
+mod counter_column_tests {
+    use super::decode_delta_int;
+
+    #[test]
+    fn truncated_counter_columns_return_errors() {
+        // One literal delta whose signed LEB128 value is truncated.
+        assert!(decode_delta_int(&[0x7f, 0x80]).is_err());
+    }
+
+    #[test]
+    fn overflowing_counter_columns_return_errors() {
+        let overflowing = hexane::Column::<i64>::from_values(vec![i64::MAX, 1]).save();
+        assert!(decode_delta_int(&overflowing).is_err());
+    }
+
+    #[test]
+    fn null_counter_columns_return_errors() {
+        let nulls = hexane::DeltaColumn::<Option<i64>>::from_values(vec![None]).save();
+        assert!(decode_delta_int(&nulls).is_err());
+    }
+
+    #[test]
+    fn valid_counter_columns_round_trip() {
+        for values in [vec![], vec![1, 2, 2, 5, 3], vec![i64::MAX, i64::MAX - 1]] {
+            let encoded = hexane::DeltaColumn::<i64>::from_values(values.clone()).save();
+            assert_eq!(decode_delta_int(&encoded).unwrap(), values);
+        }
+    }
+
+    #[test]
+    fn malformed_bundle_returns_a_load_error() {
+        let bytes = include_bytes!("fixtures/truncated-counter-bundle.bin");
+        assert!(crate::AutoCommit::load(bytes).is_err());
     }
 }
