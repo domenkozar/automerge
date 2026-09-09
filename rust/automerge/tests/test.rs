@@ -4448,3 +4448,17 @@ fn patches_expose_surviving_conflict_after_deleting_other_branch_from_fuzz_trace
         .unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn change_with_unread_value_bytes_is_rejected() {
+    // Found by fuzzing. The value metadata column of the single op says
+    // "null" but carries a length of 297, and the raw value column declares
+    // 369 bytes that no op ever reads. The change parses, but re-encoding it
+    // produces different bytes and therefore a different hash, so the heads
+    // recorded when applying it disagree with what `get_changes` returns.
+    let bytes = fixture("change_null_value_with_payload.automerge");
+    assert!(Change::from_bytes(bytes.clone()).is_err());
+    assert!(Automerge::load(&bytes).is_err());
+    let mut doc = Automerge::new();
+    assert!(doc.load_incremental(&bytes).is_err());
+}

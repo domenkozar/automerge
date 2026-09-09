@@ -219,9 +219,13 @@ impl Iterator for ValueIter<'_> {
                 let val_meta = ValueMeta::from(next);
                 #[allow(clippy::redundant_slicing)]
                 match val_meta.type_code() {
-                    ValueType::Null => Some(Ok(ScalarValue::Null)),
-                    ValueType::True => Some(Ok(ScalarValue::Boolean(true))),
-                    ValueType::False => Some(Ok(ScalarValue::Boolean(false))),
+                    ValueType::Null => self.parse_empty(val_meta, "null", ScalarValue::Null),
+                    ValueType::True => {
+                        self.parse_empty(val_meta, "true", ScalarValue::Boolean(true))
+                    }
+                    ValueType::False => {
+                        self.parse_empty(val_meta, "false", ScalarValue::Boolean(false))
+                    }
                     ValueType::Uleb => self.parse_input(val_meta, leb128_u64),
                     ValueType::Leb => self.parse_input(val_meta, leb128_i64),
                     ValueType::String => self.parse_raw(val_meta, |bytes| {
@@ -273,6 +277,24 @@ impl Iterator for ValueIter<'_> {
 }
 
 impl ValueIter<'_> {
+    /// Values without a payload must not claim one: a length that no op
+    /// reads would leave bytes in the raw column that re-encoding drops,
+    /// changing the hash of the change.
+    fn parse_empty(
+        &self,
+        meta: ValueMeta,
+        name: &str,
+        value: ScalarValue,
+    ) -> Option<Result<ScalarValue, DecodeColumnError>> {
+        if meta.length() != 0 {
+            return Some(Err(DecodeColumnError::invalid_value(
+                "value",
+                format!("{name} should have length 0, had {}", meta.length()),
+            )));
+        }
+        Some(Ok(value))
+    }
+
     fn parse_raw<'b, R, F: Fn(&'b [u8]) -> Result<R, DecodeColumnError>>(
         &'b mut self,
         meta: ValueMeta,
@@ -309,6 +331,11 @@ impl ValueIter<'_> {
 
     pub(crate) fn done(&self) -> bool {
         self.meta.done()
+    }
+
+    /// True once every byte of the raw value column has been read.
+    pub(crate) fn raw_done(&self) -> bool {
+        self.raw.done()
     }
 }
 
