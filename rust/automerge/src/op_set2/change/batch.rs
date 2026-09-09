@@ -6,7 +6,7 @@ use crate::op_set2::SuccInsert;
 use crate::types::{
     ActorId, ElemId, ObjId, ObjType, OpId, Prop, ScalarValue, SequenceType, SmallHashMap,
 };
-use crate::{Automerge, Change, ChangeHash, PatchLog, PatchLogMismatch};
+use crate::{Automerge, Change, ChangeHash, PatchLog};
 use crate::{AutomergeError, TextEncoding};
 
 use super::super::op::{ChangeOp, Op, OpBuilder};
@@ -854,24 +854,55 @@ impl BatchApply {
         }
     }
 
-    fn import_ops(&mut self, doc: &mut Automerge) {
+    fn import_ops(&mut self, doc: &mut Automerge) -> Result<(), AutomergeError> {
         for c in &self.changes {
-            doc.import_ops_to(c, &mut self.ops).unwrap();
+            doc.import_ops_to(c, &mut self.ops)?;
+        }
+        Ok(())
+    }
+
+    /// Record the changes in the change graph. Only called once their ops
+    /// are known to fit the document, so the graph never lists a change
+    /// whose ops the op set does not hold.
+    fn record_history(&self, doc: &mut Automerge) {
+        for c in &self.changes {
             doc.update_history(c);
         }
         doc.remove_unused_actors(true);
+    }
+
+    /// Every predecessor an op names must exist, either in the document or
+    /// in this batch, and a delete must name at least one. A delete is only
+    /// stored as successor entries on its predecessors, so one with no
+    /// resolvable predecessor would leave the change graph counting an op
+    /// the op set does not hold, and rebuilding that change would fail.
+    fn validate_preds(&self) -> Result<(), AutomergeError> {
+        if !self.pred.is_empty() {
+            return Err(AutomergeError::MissingPred);
+        }
+        if self
+            .ops
+            .iter()
+            .any(|o| o.action() == Action::Delete && o.pred().is_empty())
+        {
+            return Err(AutomergeError::MissingPred);
+        }
+        Ok(())
     }
 
     pub(crate) fn apply(
         &mut self,
         doc: &mut Automerge,
         log: &mut PatchLog,
-    ) -> Result<(), PatchLogMismatch> {
+    ) -> Result<(), AutomergeError> {
         self.insert_new_actors(doc);
 
         log.migrate_actors(&doc.ops().actors)?;
 
-        self.import_ops(doc);
+        if let Err(e) = self.import_ops(doc) {
+            doc.remove_unused_actors(false);
+            return Err(e);
+        }
 
         let mut obj_info = doc.ops().obj_info.clone();
 
@@ -934,6 +965,16 @@ impl BatchApply {
             });
             debug_assert_eq!(succ, tmp_succ);
         }
+
+        if let Err(e) = self.validate_preds() {
+            // Nothing has been written to the op set or the change graph
+            // yet, so dropping the actors added for this batch restores the
+            // document.
+            doc.remove_unused_actors(false);
+            return Err(e);
+        }
+
+        self.record_history(doc);
 
         for a in conflicts {
             match a {
@@ -1102,7 +1143,7 @@ impl Automerge {
 
         self.queue.extend(incoming);
         let changes = self.queue.pop_topo_sorted_ready(&self.change_graph);
-        Ok(BatchApply::new(changes).apply(self, log)?)
+        BatchApply::new(changes).apply(self, log)
     }
 
     fn import_ops_to(
@@ -1116,10 +1157,16 @@ impl Automerge {
     }
 
     fn import_ops(&mut self, change: &Change) -> Result<Vec<ChangeOp>, AutomergeError> {
-        let actors: Vec<_> = change
+        // A change may only name actors the document already knows, either
+        // from earlier changes or because this change introduces its own.
+        let actors = change
             .actors()
-            .map(|a| self.ops.lookup_actor(a).unwrap())
-            .collect();
+            .map(|a| {
+                self.ops
+                    .lookup_actor(a)
+                    .ok_or_else(|| AutomergeError::InvalidActorId(a.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         change
             .iter_ops()

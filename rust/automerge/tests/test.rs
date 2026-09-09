@@ -4462,3 +4462,38 @@ fn change_with_unread_value_bytes_is_rejected() {
     let mut doc = Automerge::new();
     assert!(doc.load_incremental(&bytes).is_err());
 }
+
+#[test]
+fn delete_without_existing_pred_is_rejected() {
+    // Found by fuzzing. A delete op deletes only the ops in its `pred`, so
+    // a delete whose preds do not exist leaves nothing in the op set. The
+    // change graph still records the op, and rebuilding the change from the
+    // op set then fails with MissingOps and panics in `get_changes`.
+    let make = |pred: Vec<automerge::legacy::OpId>| {
+        automerge::Change::from(automerge::ExpandedChange {
+            operations: vec![automerge::legacy::Op {
+                action: automerge::legacy::OpType::Delete,
+                obj: automerge::legacy::ObjectId::Root,
+                key: automerge::legacy::Key::Map("value".into()),
+                pred: pred.into_iter().collect(),
+                insert: false,
+            }],
+            actor_id: ActorId::from(b"synthetic".as_slice()),
+            author: None,
+            hash: None,
+            seq: 1,
+            start_op: std::num::NonZero::new(1).unwrap(),
+            time: 0,
+            message: None,
+            deps: vec![],
+            extra_bytes: vec![],
+        })
+    };
+    let missing = automerge::legacy::OpId::new(7, &ActorId::from(b"missing".as_slice()));
+    for change in [make(vec![]), make(vec![missing])] {
+        let mut doc = AutoCommit::new();
+        assert!(doc.apply_changes(vec![change]).is_err());
+        assert!(doc.get_changes(&[]).is_empty());
+        AutoCommit::load(&doc.save()).unwrap();
+    }
+}
