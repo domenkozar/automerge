@@ -64,6 +64,8 @@ pub enum AutomergeError {
     MissingHash(ChangeHash),
     #[error("change's deps should already be in the document")]
     MissingDeps,
+    #[error("change contains an op whose predecessor does not exist")]
+    MissingPred,
     #[error("compressed chunk was not a change")]
     NonChangeCompressed,
     #[error("id was not an object id")]
