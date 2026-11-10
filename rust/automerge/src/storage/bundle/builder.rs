@@ -611,6 +611,18 @@ impl<'a> BundleChangeIterUnverified<'a> {
     }
 }
 
+fn checked_decoder<T: hexane::ColumnValueRef>(
+    data: &[u8],
+) -> Result<hexane::Decoder<'_, T>, ParseError> {
+    hexane::Column::<T>::load(data)?;
+    Ok(hexane::decoder::<T>(data))
+}
+
+fn checked_delta_decoder(data: &[u8]) -> Result<hexane::DeltaDecoder<'_, Option<i64>>, ParseError> {
+    hexane::DeltaColumn::<Option<i64>>::load(data)?;
+    Ok(hexane::DeltaDecoder::<Option<i64>>::new(data))
+}
+
 impl<'a> BundleChangeIterInner<'a> {
     fn try_new(
         columns: &RawColumns<compression::Uncompressed>,
@@ -630,15 +642,15 @@ impl<'a> BundleChangeIterInner<'a> {
         for col in columns.iter() {
             let d = &data[col.data()];
             match col.spec() {
-                change::ACTOR => actor = hexane::decoder::<Option<ActorIdx>>(d),
-                change::SEQ => seq = hexane::DeltaDecoder::<Option<i64>>::new(d),
-                change::START_OP => start_op = hexane::DeltaDecoder::<Option<i64>>::new(d),
-                change::MAX_OP => max_op = hexane::DeltaDecoder::<Option<i64>>::new(d),
-                change::TIMESTAMP => timestamp = hexane::DeltaDecoder::<Option<i64>>::new(d),
-                change::MESSAGE => message = hexane::decoder::<Option<String>>(d),
-                change::DEP_COUNT => dep_count = hexane::decoder::<Option<u64>>(d),
-                change::DEPS => deps = hexane::DeltaDecoder::<Option<i64>>::new(d),
-                change::EXTRA_COUNT => extra_count = hexane::decoder::<Option<u64>>(d),
+                change::ACTOR => actor = checked_decoder::<Option<ActorIdx>>(d)?,
+                change::SEQ => seq = checked_delta_decoder(d)?,
+                change::START_OP => start_op = checked_delta_decoder(d)?,
+                change::MAX_OP => max_op = checked_delta_decoder(d)?,
+                change::TIMESTAMP => timestamp = checked_delta_decoder(d)?,
+                change::MESSAGE => message = checked_decoder::<Option<String>>(d)?,
+                change::DEP_COUNT => dep_count = checked_decoder::<Option<u64>>(d)?,
+                change::DEPS => deps = checked_delta_decoder(d)?,
+                change::EXTRA_COUNT => extra_count = checked_decoder::<Option<u64>>(d)?,
                 change::EXTRA => extra = d,
                 spec => return Err(ParseError::InvalidChangeColumn(u32::from(spec))),
             }

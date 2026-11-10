@@ -467,8 +467,12 @@ mod counter_column_tests {
     }
 
     #[test]
-    fn malformed_bundle_returns_a_load_error() {
-        let bytes = include_bytes!("fixtures/truncated-counter-bundle.bin");
-        assert!(crate::AutoCommit::load(bytes).is_err());
+    fn malformed_bundles_return_load_errors() {
+        for bytes in [
+            include_bytes!("fixtures/truncated-counter-bundle.bin").as_slice(),
+            include_bytes!("fixtures/truncated-change-actor-bundle.bin").as_slice(),
+        ] {
+            assert!(crate::AutoCommit::load(bytes).is_err());
+        }
     }
 }
